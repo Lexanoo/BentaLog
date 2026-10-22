@@ -67,7 +67,7 @@ function productStats(p){
   return {q:r2(q), v:r2(v), last};
 }
 
-/* ---------- actions (each one saves to Supabase first, then updates the screen) ---------- */
+/* ---------- actions (each one saves to Firestore first, then updates the screen) ---------- */
 async function saveProduct(e){
   const p = state.modal.id ? findProduct(state.modal.id) : null, errEl = $('#mErr'), err = m => { errEl.textContent = m; return false; };
   const name = $('#pName').value.trim(), price = num($('#pPrice').value), unit = $('#pUnit').value.trim().toLowerCase(), sv = $('#pStock').value.trim();

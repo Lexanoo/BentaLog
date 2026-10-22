@@ -81,7 +81,7 @@ const ACTIONS = {
 
 /* form id -> submit handler(event) */
 const FORMS = {
-  loginForm:doLogin, signupForm:doSignup, forgotForm:doForgot, newPwForm:doNewPassword,
+  loginForm:doLogin, signupForm:doSignup, forgotForm:doForgot,
   createShopForm:doCreateShop, joinShopForm:doJoinShop,
   productForm:saveProduct, userForm:saveUser, accountForm:saveAccount,
   bizForm:saveBiz, storeForm:saveStore, methodForm:saveMethod,

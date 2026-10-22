@@ -7,7 +7,7 @@ const savedJoinCode = () => { try { return sessionStorage.getItem(JOIN_KEY) || '
 function viewOnboard(){
   const u = state.user, pending = state.memberships.filter(m => m.status==='pending'), disabled = state.memberships.filter(m => m.status==='disabled');
   const hasShop = state.memberships.some(m => m.status==='active');
-  const name = (u.user_metadata && (u.user_metadata.full_name || u.user_metadata.name)) || '';
+  const name = u.name || '';
   return `<div class="onboard">
     <div class="ob-top">
       <h1 class="logo" style="font-size:30px">Benta<b>Log</b></h1>
@@ -17,10 +17,10 @@ function viewOnboard(){
     </div>
     <div><h2 style="font-size:26px">${name ? 'Hi ' + esc(name.split(' ')[0]) + '!' : 'Welcome!'} Let’s get you into a shop.</h2>
       <p class="muted" style="margin:6px 0 0">Owners set up the shop. Staff join with the owner’s invite code.</p></div>
-    ${pending.map(m => `<div class="card pending"><div><strong>Waiting for approval from ${esc(m.workspaces ? m.workspaces.name : 'the shop')}</strong>
+    ${pending.map(m => `<div class="card pending"><div><strong>Waiting for approval from ${esc(m.name || 'the shop')}</strong>
         <div class="muted" style="font-size:14px">The owner will see your request under Users. This page opens the shop once you’re approved.</div></div>
         <div><button class="btn sm" data-act="recheck">Check again</button></div></div>`).join('')}
-    ${disabled.map(m => `<div class="card pending" style="background:var(--red-soft);border-color:var(--red)"><strong>Your access to ${esc(m.workspaces ? m.workspaces.name : 'a shop')} is turned off.</strong><span class="muted" style="font-size:14px">Ask the owner to turn it back on.</span></div>`).join('')}
+    ${disabled.map(m => `<div class="card pending" style="background:var(--red-soft);border-color:var(--red)"><strong>Your access to ${esc(m.name || 'a shop')} is turned off.</strong><span class="muted" style="font-size:14px">Ask the owner to turn it back on.</span></div>`).join('')}
     <div class="ob-grid">
       <form id="createShopForm" class="card ob-card" novalidate>
         <h2>Set up a new shop</h2>

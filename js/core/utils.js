@@ -89,23 +89,26 @@ async function attempt(fn, {btn, errEl, label='Saving…'} = {}){
   finally { if (btn && btn.isConnected) { btn.disabled = false; btn.textContent = old; } }
 }
 
-/* Supabase / network errors -> sentences people can act on */
+/* Firebase / network errors -> sentences people can act on */
 const FRIENDLY = [
-  [/invalid login credentials/i, 'Email or password is incorrect.'],
-  [/email not confirmed/i, 'Confirm your email first. Check your inbox for the link we sent.'],
-  [/user already registered/i, 'An account with this email already exists. Sign in instead.'],
-  [/password should be at least/i, 'Password must be at least 6 characters.'],
-  [/same.*password|password.*different/i, 'Choose a password different from your current one.'],
-  [/provider is not enabled|unsupported provider/i, 'Google sign-in is not turned on yet. In Supabase, open Authentication → Providers → Google.'],
-  [/failed to fetch|networkerror|load failed|network request failed/i, 'Can’t reach the server. Check your internet connection and try again.'],
-  [/rate limit|too many requests/i, 'Too many attempts. Wait a minute and try again.'],
-  [/stores_workspace_id_prefix_key/i, 'Another business already uses that receipt prefix.'],
-  [/violates foreign key constraint.*sales/i, 'This is used by past sales, so it can’t be deleted. Rename it or turn it off instead.'],
-  [/row-level security|permission denied/i, 'You don’t have permission to do that. Only owners can change this.'],
-  [/jwt expired|invalid jwt/i, 'Your session expired. Sign in again.'],
+  [/auth\/(invalid-credential|invalid-login-credentials|wrong-password|user-not-found)/i, 'Email or password is incorrect.'],
+  [/auth\/email-already-in-use/i, 'An account with this email already exists. Sign in instead.'],
+  [/auth\/account-exists-with-different-credential/i, 'This email already signs in another way. Use email and password, or the method you used before.'],
+  [/auth\/invalid-email/i, 'Enter a valid email address.'],
+  [/auth\/weak-password/i, 'Password must be at least 6 characters.'],
+  [/auth\/requires-recent-login/i, 'For your security, sign out and sign in again, then change your password.'],
+  [/auth\/user-disabled/i, 'This account has been turned off. Contact the app owner.'],
+  [/auth\/operation-not-allowed/i, 'This sign-in method is not turned on yet. In Firebase, open Authentication → Sign-in method.'],
+  [/auth\/unauthorized-domain/i, 'This web address can’t sign in yet. In Firebase, add it under Authentication → Settings → Authorized domains.'],
+  [/auth\/popup-blocked/i, 'Your browser blocked the Google window. Allow popups for this site and try again.'],
+  [/auth\/too-many-requests|resource-exhausted|too many requests/i, 'Too many attempts. Wait a minute and try again.'],
+  [/auth\/network-request-failed|unavailable|failed to fetch|networkerror|load failed|client is offline/i, 'Can’t reach the server. Check your internet connection and try again.'],
+  [/requires (an|a COLLECTION_GROUP\w*) index|index.*required/i, 'The database is missing an index. Deploy firebase/firestore.indexes.json (see README).'],
+  [/permission-denied|insufficient permissions/i, 'You don’t have permission to do that. Only owners can change this.'],
+  [/auth\/(id-token-expired|user-token-expired)/i, 'Your session expired. Sign in again.'],
 ];
 function friendly(e){
-  const m = (e && (e.message || e.error_description || e.msg)) || String(e);
+  const m = (e && ((e.code ? e.code + ' ' : '') + (e.message || ''))) || String(e);
   for (const [re, text] of FRIENDLY) if (re.test(m)) return text;
-  return m;
+  return (e && e.message) || m;
 }

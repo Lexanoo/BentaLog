@@ -1,5 +1,5 @@
 /* App memory.
-   db    = the open shop's data, loaded from Supabase (see js/data/api.js loadShop)
+   db    = the open shop's data, loaded from Firestore (see js/data/api.js watchShop)
    me    = the signed-in user in this shop: {id, name, email, avatar, provider, role, status}
    state = what's on screen right now (current tab, cart, filters, open dialog…) */
 
@@ -20,7 +20,7 @@ let me = null;
 
 const state = {
   phase: 'boot',                   // boot | setup | auth | loading | onboard | app | error
-  user: null,                      // Supabase auth user
+  user: null,                      // signed-in user: {id, email, name, avatar, provider}
   memberships: [],                 // every shop this user belongs to
   error: '',
   authTab: 'login', authMsg: '',   // login | signup | forgot | newpw

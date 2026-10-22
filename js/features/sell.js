@@ -97,7 +97,7 @@ function addCustomItem(){
   state.cart.push({pid:null, name:n, price:r2(p), unit:'pc', step:1, qty:1});
 }
 
-/* Saves the sale in Supabase. The database assigns the receipt number and takes the items out of stock. */
+/* Saves the sale in Firestore. One transaction assigns the receipt number and takes the items out of stock. */
 async function recordSale(btn){
   const e = checkoutErr(); if (e.block) { updateCheckout(); return false; }
   const total = cartTotal(), k = kindOf(state.method), cart = state.cart;

@@ -1,17 +1,19 @@
-/* Sign in, create account, Google, forgot / new password, and the "not configured yet" screen.
+/* Sign in, create account, Google, forgot password, and the "not configured yet" screen.
+   Firebase emails the reset link and hosts the page where the new password is set.
    Session changes are handled in js/app/main.js (onAuth). */
 
 function viewSetup(){
   return `<div class="screen"><div class="card setup">
     <h1 class="logo" style="font-size:34px">Benta<b>Log</b></h1>
-    <h2 style="font-size:20px">Connect your Supabase project</h2>
+    <h2 style="font-size:20px">Connect your Firebase project</h2>
     <ol>
-      <li>Create a free project at <a href="https://supabase.com" target="_blank" rel="noopener">supabase.com</a>.</li>
-      <li>In the project, open <b>SQL Editor</b>, paste everything from <code>supabase/schema.sql</code>, and click <b>Run</b>.</li>
-      <li>Open <b>Project Settings → API</b>. Copy the <b>Project URL</b> and the <b>anon public</b> key into <code>js/config.js</code>.</li>
+      <li>Create a free project at <a href="https://console.firebase.google.com" target="_blank" rel="noopener">console.firebase.google.com</a>.</li>
+      <li>Turn on <b>Authentication</b> (Email/Password and Google) and create a <b>Firestore Database</b>.</li>
+      <li>Publish the rules in <code>firebase/firestore.rules</code> (Firestore → Rules).</li>
+      <li>Open <b>Project settings → Your apps</b>, add a Web app, and copy its <code>firebaseConfig</code> into <code>js/config.js</code>.</li>
       <li>Reload this page.</li>
     </ol>
-    <p class="note">The full guide, including Google sign-in, is in <code>README.md</code>. ${window.supabase ? '' : '<br><strong>The Supabase library didn’t load.</strong> Check your internet connection.'}</p>
+    <p class="note">The full guide is in <code>README.md</code>. ${window.firebase ? '' : '<br><strong>The Firebase library didn’t load.</strong> Check your internet connection.'}</p>
   </div></div>`;
 }
 
@@ -53,15 +55,6 @@ function viewAuth(){
         <button class="btn primary record" type="submit">Send reset link</button>
         <p class="muted" style="margin:0;text-align:center;font-size:14px"><button type="button" class="linkbtn" data-act="authTab" data-v="login">Back to sign in</button></p>
       </form>`,
-    newpw: `<form id="newPwForm" class="auth-form" novalidate>
-        <div><h2>Set a new password</h2><p class="muted lede">You opened a password reset link. Choose your new password.</p></div>
-        <div class="row2">
-          <label class="field">New password${pwInput('nPass','new-password')}</label>
-          <label class="field">Confirm${pwInput('nPass2','new-password')}</label>
-        </div>
-        <p class="err" id="authErr" role="alert"></p>
-        <button class="btn primary record" type="submit">Save new password</button>
-      </form>`,
   };
   return `<div class="auth">
     <div class="auth-side">
@@ -90,18 +83,16 @@ async function doSignup(e){
   if (!isEmail(email)) return authErr('Enter a valid email address.');
   if (pw.length < 6) return authErr('Password must be at least 6 characters.');
   if (pw !== pw2) return authErr('The two passwords don’t match.');
-  let res;
-  if (!await attempt(async () => { res = await api.signUp(name, email, pw); }, {btn:e.submitter, errEl:$('#authErr'), label:'Creating…'})) return false;
-  if (!res.session) {   // email confirmation is on in Supabase
-    state.authTab = 'login'; state.authMsg = `Almost done. We sent a confirmation link to ${email}. Open it, then sign in.`;
-    rerender(); $('#lEmail').value = email;
-  }
-  return false;          // with a session, onAuth (main.js) takes over
+  let user;
+  if (!await attempt(async () => { user = await api.signUp(name, email, pw); }, {btn:e.submitter, errEl:$('#authErr'), label:'Creating…'})) return false;
+  // Firebase signs the new account in right away (onAuth in main.js); this adds the name it didn't have yet
+  if (state.user && state.user.id===user.id) { state.user = user; if (state.phase==='onboard') rerender(); }
+  return false;
 }
 
 async function doGoogle(el){
   await attempt(() => api.google(), {btn:el, errEl:$('#authErr'), label:'Opening Google…'});
-  return false; // the browser leaves for Google; nothing to redraw
+  return false; // success continues in onAuth (main.js)
 }
 
 async function doForgot(e){
@@ -109,17 +100,6 @@ async function doForgot(e){
   if (!isEmail(email)) return authErr('Enter the email you signed up with.');
   if (!await attempt(() => api.sendReset(email), {btn:e.submitter, errEl:$('#authErr'), label:'Sending…'})) return false;
   state.authMsg = `If ${email} has an account, a reset link is on its way. Check your inbox.`;
-}
-
-async function doNewPassword(e){
-  const pw = $('#nPass').value, pw2 = $('#nPass2').value;
-  if (pw.length < 6) return authErr('Password must be at least 6 characters.');
-  if (pw !== pw2) return authErr('The two passwords don’t match.');
-  if (!await attempt(() => api.setPassword(pw), {btn:e.submitter, errEl:$('#authErr')})) return false;
-  state.authTab = 'login'; toast('Password updated');
-  const {data} = await sb.auth.getSession();
-  if (data.session) { state.user = data.session.user; await enterShop(); }
-  return false;
 }
 
 async function logout(){

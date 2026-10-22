@@ -38,7 +38,7 @@ function viewSettings(){
 
     <div class="card panel set-card">
       <h3>Data</h3>
-      <p class="muted" style="margin:0;font-size:14px">Everything is saved in your Supabase database and synced to every signed-in device. A backup file is a copy you keep yourself. Restoring adds a backup’s data to this shop, including backups from the old browser-only version.</p>
+      <p class="muted" style="margin:0;font-size:14px">Everything is saved in your Firebase database and synced to every signed-in device. A backup file is a copy you keep yourself. Restoring adds a backup’s data to this shop, including backups from the old browser-only version.</p>
       <div class="actions">
         <button class="btn" data-act="export">Download backup</button>
         <button class="btn" data-act="import">Restore from backup</button>

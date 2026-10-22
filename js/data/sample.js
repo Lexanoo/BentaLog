@@ -5,7 +5,7 @@ function rng(seed){ return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let 
 
 /* 14 days of made-up sales built from the shop's real businesses, products and payment methods */
 function buildSampleSales(){
-  const ws = db.workspace.id, rand = rng(Date.now() % 100000), pick = a => a[Math.floor(rand()*a.length)];
+  const rand = rng(Date.now() % 100000), pick = a => a[Math.floor(rand()*a.length)];
   const now = Date.now(), rows = [], seq = {};
   const names = ['Nena','Rudy','Joy','Ben','Luz','Mark'];
   const methods = methodsOn(), ofKind = k => methods.filter(m=>m.kind===k);
@@ -26,16 +26,15 @@ function buildSampleSales(){
         const total = r2(items.reduce((s,x)=>s+x.price*x.qty,0));
         const m = rand(), want = m<.68 ? 'cash' : m<.88 ? 'digital' : 'credit';
         const meth = pick(ofKind(want).length ? ofKind(want) : methods);
-        const row = {workspace_id:ws, store_id:st.id, ts:new Date(ts).toISOString(), items, total, method_id:meth.id,
-          by_name: rand()<.6 ? 'Staff' : me.name, recorded_at:new Date(ts).toISOString()};
+        const row = {storeId:st.id, ts, items, total, methodId:meth.id, byName: rand()<.6 ? 'Staff' : me.name, recordedTs:ts};
         if (meth.kind==='cash') row.tendered = Math.ceil(total/100)*100;
-        if (meth.kind==='credit') { row.customer = pick(names); if (d>2 || rand()<.3) row.paid_at = new Date(ts + 2*864e5).toISOString(); }
-        if (rand() < .06) { row.late = true; row.recorded_at = new Date(ts + (40+Math.floor(rand()*150))*60000).toISOString(); }
-        if (rand() < .025) row.voided = {reason:'Wrong item entered', ts:new Date(ts+300000).toISOString(), by:me.name};
+        if (meth.kind==='credit') { row.customer = pick(names); if (d>2 || rand()<.3) row.paidTs = ts + 2*864e5; }
+        if (rand() < .06) { row.late = true; row.recordedTs = ts + (40+Math.floor(rand()*150))*60000; }
+        if (rand() < .025) row.voided = {reason:'Wrong item entered', ts:ts+300000, by:me.name};
         list.push(row);
       }
     }
-    list.sort((a,b)=>a.ts<b.ts?-1:1).forEach(r => { r.receipt_no = st.prefix + '-' + pad(++seq[st.id],4); rows.push(r); });
+    list.sort((a,b)=>a.ts-b.ts).forEach(r => { r.receiptNo = st.prefix + '-' + pad(++seq[st.id],4); rows.push(r); });
   }
   return {rows, seq};
 }
@@ -43,7 +42,7 @@ function buildSampleSales(){
 async function addSampleSales(){
   const {rows, seq} = buildSampleSales();
   if (!rows.length) throw new Error('Add some products first. Sample sales are made from your products.');
-  await api.insertSales(rows);
+  await api.insertSales(db.workspace.id, rows);
   for (const st of db.stores) if (seq[st.id]) await api.updateStore(st.id, {seq:seq[st.id]});
   return rows.length;
 }
@@ -89,19 +88,19 @@ async function importBackup(file){
     fresh.forEach((p, i) => productMap[p.id] = saved[i].id);
     (list||[]).forEach(p => { const ex = have.find(x => x.name.toLowerCase()===String(p.name).toLowerCase()); if (ex) productMap[p.id] = ex.id; });
   }
-  const iso = v => new Date(typeof v==='number' ? v : Date.parse(v)).toISOString();
+  const ms = v => typeof v==='number' ? v : Date.parse(v);
   const rows = d.sales.filter(s => storeMap[s.store] && methodMap[s.method] && s.id).map(s => ({
-    workspace_id:ws, store_id:storeMap[s.store], receipt_no:String(s.id), ts:iso(s.ts),
-    items:(s.items||[]).map(it => ({...it, pid: productMap[it.pid] || (UUID.test(it.pid||'') ? it.pid : null)})),
-    total:+s.total, method_id:methodMap[s.method], tendered:s.tendered ?? null, customer:s.customer || null, ref:s.gref || null,
-    late:!!s.late, recorded_at:iso(s.recordedTs || s.ts), paid_at:s.paidTs ? iso(s.paidTs) : null,
-    voided: s.voided ? {...s.voided, ts:iso(s.voided.ts)} : null, by_name:s.by || ''}));
-  await api.insertSales(rows);
+    storeId:storeMap[s.store], receiptNo:String(s.id), ts:ms(s.ts),
+    items:(s.items||[]).map(it => ({...it, pid: productMap[it.pid] || null})),
+    total:+s.total, methodId:methodMap[s.method], tendered:s.tendered ?? null, customer:s.customer || null, ref:s.gref || null,
+    late:!!s.late, recordedTs:ms(s.recordedTs || s.ts), paidTs:s.paidTs ? ms(s.paidTs) : null,
+    voided: s.voided ? {...s.voided, ts:ms(s.voided.ts)} : null, byName:s.by || ''}));
+  await api.insertSales(ws, rows);
   for (const c of (d.closings||[])) if (storeMap[c.store]) await api.saveClosing(ws, {...c, store:storeMap[c.store]});
   // continue receipt numbers after the highest imported one
   for (const sid of new Set(Object.values(storeMap))) {
     const st = db.stores.find(x => x.id===sid);
-    const top = Math.max(0, ...rows.filter(r => r.store_id===sid).map(r => +(r.receipt_no.split('-').pop()) || 0));
+    const top = Math.max(0, ...rows.filter(r => r.storeId===sid).map(r => +(r.receiptNo.split('-').pop()) || 0));
     if (top > st.seq) await api.updateStore(sid, {seq:top});
   }
   if (d.settings) {

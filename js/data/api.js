@@ -1,152 +1,350 @@
-/* Every Supabase call lives in this file.
+/* Every Firebase call lives in this file (Firebase Auth + Cloud Firestore).
    Each function returns plain app objects (see the "to…" mappers) or throws an Error.
-   Table and function definitions: supabase/schema.sql */
+   Who may read and write what: firebase/firestore.rules
+
+   Firestore layout
+     users/{uid}                      profile: name, email, avatar, provider, lastLogin
+     joinCodes/{code}                 invite code -> {workspaceId, name}
+     workspaces/{ws}                  shop: name, settings, joinCode, createdBy
+       members/{uid}                  uid, role, status, name, email, avatar, lastSeen
+       stores/{id}                    business tabs: name, prefix, seq (last receipt number)
+       methods/{id}                   payment methods: name, kind, active
+       products/{id}                  storeId, name, category, sku, price, unit, step, stock, active
+       sales/{receiptNo}              storeId, ts, items, total, methodId, …, unpaid (pay-later not yet collected)
+       closings/{storeId_day}         storeId, day, expected, counted, diff
+   Times are stored as milliseconds (Date.now()). */
 
 const CONFIG = window.BENTALOG_CONFIG || {};
 const SALES_DAYS = +CONFIG.salesDays || 180;
-const isConfigured = () => /^https:\/\/\S+$/.test(CONFIG.supabaseUrl || '') && (CONFIG.supabaseAnonKey || '').length > 20;
-const sb = isConfigured() && window.supabase
-  ? window.supabase.createClient(CONFIG.supabaseUrl, CONFIG.supabaseAnonKey, {auth:{persistSession:true, autoRefreshToken:true, detectSessionInUrl:true}})
-  : null;
+const FB = CONFIG.firebase || {};
+const isConfigured = () => !!(FB.apiKey && FB.projectId && FB.appId);
+const fb = isConfigured() && window.firebase ? firebase.initializeApp(FB) : null;
+const fbAuth = fb && firebase.auth();
+const fdb = fb && firebase.firestore();
+// keeps a copy on the device so the app opens faster and reads cost less; fails quietly in private windows
+if (fdb) fdb.enablePersistence({synchronizeTabs:true}).catch(() => {});
 const appUrl = () => location.origin + location.pathname;
 
-/* unwrap {data, error} */
-async function q(promise){ const {data, error} = await promise; if (error) throw error; return data; }
-/* Supabase returns at most 1000 rows per request; this keeps asking until everything is in */
-async function qAll(makeQuery){
-  const out = [];
-  for (let from = 0; ; from += 1000) {
-    const rows = await q(makeQuery().range(from, from + 999));
-    out.push(...rows);
-    if (rows.length < 1000) return out;
-  }
+/* ---------- paths and helpers ---------- */
+const W = ws => fdb.collection('workspaces').doc(ws);
+const col = (ws, name) => W(ws).collection(name);
+const curWs = () => db.workspace.id;          // the open shop, for calls that only pass a record id
+const uid = () => { const u = fbAuth.currentUser; if (!u) throw new Error('You need to sign in first.'); return u.uid; };
+const docsOf = snap => snap.docs.map(d => ({id:d.id, ...d.data()}));
+const byCreated = (a, b) => (a.createdAt||0) - (b.createdAt||0);
+const saleId = receiptNo => String(receiptNo).replace(/\//g, '_');
+const makeCode = () => { const A = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789', r = crypto.getRandomValues(new Uint32Array(6)); return [...r].map(n => A[n % A.length]).join(''); };
+/* deletes or writes in chunks; Firestore allows 500 writes per batch */
+async function inBatches(items, write){
+  for (let i = 0; i < items.length; i += 450) { const b = fdb.batch(); items.slice(i, i + 450).forEach(x => write(b, x)); await b.commit(); }
 }
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/* ---------- database rows -> app objects ---------- */
-const toStore = r => ({id:r.id, name:r.name, prefix:r.prefix, seq:r.seq});
-const toMethod = r => ({id:r.id, name:r.name, kind:r.kind, active:r.active});
-const toProduct = r => ({id:r.id, store:r.store_id, name:r.name, category:r.category||'', sku:r.sku||'', price:+r.price, unit:r.unit,
-  step:+r.step, stock:r.stock==null ? null : +r.stock, active:r.active, created_at:r.created_at});
-const toSale = r => ({uuid:r.id, id:r.receipt_no, store:r.store_id, ts:Date.parse(r.ts), items:r.items || [], total:+r.total, method:r.method_id,
+/* ---------- Firestore documents -> app objects ---------- */
+const toUser = u => ({id:u.uid, email:u.email || '', name:u.displayName || (u.email || '').split('@')[0], avatar:u.photoURL || null,
+  provider: u.providerData.some(p => p.providerId==='google.com') ? 'google' : 'email'});
+const toStore = r => ({id:r.id, name:r.name, prefix:r.prefix, seq:r.seq || 0});
+const toMethod = r => ({id:r.id, name:r.name, kind:r.kind, active:r.active!==false});
+const toProduct = r => ({id:r.id, store:r.storeId, name:r.name, category:r.category||'', sku:r.sku||'', price:+r.price, unit:r.unit,
+  step:+r.step, stock:r.stock==null ? null : +r.stock, active:r.active!==false, created_at:r.createdAt});
+const toSale = r => ({uuid:r.id, id:r.receiptNo, store:r.storeId, ts:r.ts, items:r.items || [], total:+r.total, method:r.methodId,
   tendered: r.tendered==null ? undefined : +r.tendered, customer: r.customer || undefined, gref: r.ref || undefined,
-  late: r.late, recordedTs: Date.parse(r.recorded_at), paidTs: r.paid_at ? Date.parse(r.paid_at) : undefined,
-  voided: r.voided ? {...r.voided, ts:Date.parse(r.voided.ts)} : undefined, by: r.by_name || ''});
-const toClosing = r => ({id:r.id, store:r.store_id, date:r.day, expected:+r.expected, counted:+r.counted, diff:+r.diff, by:r.by_name});
-const toMember = r => ({id:r.user_id, role:r.role, status:r.status, created:Date.parse(r.created_at),
-  lastLogin: r.last_seen ? Date.parse(r.last_seen) : null,
-  name: (r.profiles && r.profiles.full_name) || '', email: r.profiles && r.profiles.email, avatar: r.profiles && r.profiles.avatar_url});
-/* app product -> row columns */
-const productRow = p => ({name:p.name, category:p.category||'', sku:p.sku||'', price:p.price, unit:p.unit, step:p.step, stock:p.stock, active:p.active!==false});
+  late: !!r.late, recordedTs: r.recordedTs || r.ts, paidTs: r.paidTs || undefined, voided: r.voided || undefined, by: r.byName || ''});
+const toClosing = r => ({id:r.id, store:r.storeId, date:r.day, expected:+r.expected, counted:+r.counted, diff:+r.diff, by:r.byName || ''});
+const toMember = r => ({id:r.id, role:r.role, status:r.status, created:r.createdAt, lastLogin:r.lastSeen || null,
+  name:r.name || '', email:r.email || '', avatar:r.avatar || null});
+/* app product -> document fields */
+const productDoc = p => ({name:p.name, category:p.category||'', sku:p.sku||'', price:p.price, unit:p.unit, step:p.step, stock:p.stock ?? null, active:p.active!==false});
+/* the signed-in user's details copied onto their membership, so teammates can see them */
+const memberProfile = u => { const x = toUser(u); return {name:x.name, email:x.email, avatar:x.avatar}; };
 
-let channel = null;
+/* builds the app's shop data from the latest listener snapshots */
+function assembleShop(ws, parts, loadedFrom){
+  const w = parts.workspace.data() || {};
+  const stores = docsOf(parts.stores).sort(byCreated), methods = docsOf(parts.methods).sort(byCreated);
+  const byStore = {};
+  stores.forEach(s => byStore[s.id] = []);
+  docsOf(parts.products).sort(byCreated).forEach(p => (byStore[p.storeId] ||= []).push(toProduct(p)));
+  const sales = new Map();
+  for (const s of [...docsOf(parts.unpaid), ...docsOf(parts.recent)]) sales.set(s.id, toSale(s));
+  return {
+    workspace: {id:ws, name:w.name, joinCode:w.joinCode},
+    settings: {...DEFAULT_SETTINGS, ...(w.settings || {})},
+    stores: stores.map(toStore), methods: methods.map(toMethod), products: byStore,
+    sales: [...sales.values()].sort((a,b) => a.ts-b.ts),
+    closings: docsOf(parts.closings).map(toClosing).sort((a,b) => a.date < b.date ? -1 : 1),
+    members: docsOf(parts.members).sort(byCreated).map(toMember),
+    loadedFrom, fetchedDays: [],
+  };
+}
+
+let unsubs = [], latest = null;
 
 const api = {
   /* ---------- sign in ---------- */
-  signIn: (email, password) => q(sb.auth.signInWithPassword({email, password})),
-  signUp: (name, email, password) => q(sb.auth.signUp({email, password, options:{data:{full_name:name}, emailRedirectTo:appUrl()}})),
-  google: () => q(sb.auth.signInWithOAuth({provider:'google', options:{redirectTo:appUrl()}})),
-  sendReset: email => q(sb.auth.resetPasswordForEmail(email, {redirectTo:appUrl()})),
-  setPassword: password => q(sb.auth.updateUser({password})),
-  signOut: () => sb.auth.signOut(),
+  onAuth: fn => fbAuth.onAuthStateChanged(u => fn(u ? toUser(u) : null)),
+  signIn: (email, password) => fbAuth.signInWithEmailAndPassword(email, password),
+  async signUp(name, email, password){
+    const {user} = await fbAuth.createUserWithEmailAndPassword(email, password);
+    await user.updateProfile({displayName:name});
+    await api.saveProfile();
+    return toUser(user);
+  },
+  /* popup first; falls back to a full-page redirect when the browser blocks popups */
+  async google(){
+    const provider = new firebase.auth.GoogleAuthProvider();
+    try { await fbAuth.signInWithPopup(provider); }
+    catch (e) {
+      if (e.code==='auth/popup-blocked') return fbAuth.signInWithRedirect(provider);
+      if (e.code==='auth/popup-closed-by-user' || e.code==='auth/cancelled-popup-request') return;
+      throw e;
+    }
+  },
+  /* Firebase emails a link to its own page where the new password is set */
+  sendReset: email => fbAuth.sendPasswordResetEmail(email, {url:appUrl()}).catch(e => { if (e.code!=='auth/user-not-found') throw e; }),
+  setPassword: password => fbAuth.currentUser.updatePassword(password),
+  signOut: () => fbAuth.signOut(),
+  /* users/{uid}: one profile per person, kept up to date at every sign-in */
+  saveProfile(){
+    const u = fbAuth.currentUser; if (!u) return Promise.resolve();
+    const x = toUser(u);
+    return fdb.collection('users').doc(u.uid).set({name:x.name, email:x.email, avatar:x.avatar, provider:x.provider, lastLogin:Date.now()}, {merge:true})
+      .catch(e => console.warn('Profile not saved', e));
+  },
 
   /* ---------- shops (workspaces) and membership ---------- */
-  myMemberships: userId => q(sb.from('members').select('workspace_id, role, status, workspaces(name)').eq('user_id', userId)),
-  createShop: (name, storeName, prefix) => q(sb.rpc('create_workspace', {p_name:name, p_store:storeName, p_prefix:prefix})),
-  joinShop: code => q(sb.rpc('join_workspace', {p_code:code})),
-  touch: ws => sb.rpc('touch_member', {p_ws:ws}).then(() => {}, () => {}),
-  newJoinCode: ws => q(sb.rpc('new_join_code', {p_ws:ws})),
-  saveSettings: (ws, settings) => q(sb.from('workspaces').update({settings, name:settings.business}).eq('id', ws)),
-
-  /* Loads everything the app needs for one shop. Sales: the last `days` days, plus older unpaid pay-later sales. */
-  async loadShop(ws, days = SALES_DAYS){
-    const since = new Date(); since.setHours(0,0,0,0); since.setDate(since.getDate() - days);
-    const [w, stores, methods, prods, closings, members] = await Promise.all([
-      q(sb.from('workspaces').select('*').eq('id', ws).single()),
-      q(sb.from('stores').select('*').eq('workspace_id', ws).order('created_at')),
-      q(sb.from('payment_methods').select('*').eq('workspace_id', ws).order('created_at')),
-      qAll(() => sb.from('products').select('*').eq('workspace_id', ws).order('created_at').order('id')),
-      qAll(() => sb.from('closings').select('*').eq('workspace_id', ws).order('day')),
-      q(sb.from('members').select('*, profiles(full_name, email, avatar_url)').eq('workspace_id', ws).order('created_at')),
-    ]);
-    const credit = methods.filter(m => m.kind==='credit').map(m => m.id);
-    const [recent, oldUnpaid] = await Promise.all([
-      qAll(() => sb.from('sales').select('*').eq('workspace_id', ws).gte('ts', since.toISOString()).order('ts').order('id')),
-      credit.length ? qAll(() => sb.from('sales').select('*').eq('workspace_id', ws).lt('ts', since.toISOString())
-        .in('method_id', credit).is('paid_at', null).is('voided', null).order('ts')) : [],
-    ]);
-    const byStore = {};
-    stores.forEach(s => byStore[s.id] = []);
-    prods.forEach(p => (byStore[p.store_id] ||= []).push(toProduct(p)));
-    return {
-      workspace: {id:w.id, name:w.name, joinCode:w.join_code},
-      settings: {...DEFAULT_SETTINGS, ...(w.settings || {})},
-      stores: stores.map(toStore), methods: methods.map(toMethod), products: byStore,
-      sales: [...oldUnpaid, ...recent].map(toSale), closings: closings.map(toClosing), members: members.map(toMember),
-      loadedFrom: dayKey(since), fetchedDays: [],
-    };
+  /* every shop this user belongs to: [{workspaceId, name, role, status}] */
+  async myMemberships(userId){
+    const snap = await fdb.collectionGroup('members').where('uid', '==', userId).get();
+    return Promise.all(snap.docs.map(async d => {
+      const ws = d.ref.parent.parent.id, w = await W(ws).get().catch(() => null);
+      return {workspaceId:ws, name:(w && w.exists && w.get('name')) || 'Shop', role:d.get('role'), status:d.get('status')};
+    }));
   },
+  /* the caller becomes the owner; comes with one business and 4 payment methods */
+  async createShop(name, storeName, prefix){
+    const me = uid(), u = fbAuth.currentUser, t = Date.now();
+    name = name.trim(); if (!name) throw new Error('Enter a shop name.');
+    const wsRef = fdb.collection('workspaces').doc(), ws = wsRef.id, code = makeCode(), b = fdb.batch();
+    b.set(wsRef, {name, settings:{...DEFAULT_SETTINGS, business:name}, joinCode:code, createdBy:me, createdAt:t});
+    b.set(col(ws, 'members').doc(me), {uid:me, role:'owner', status:'active', ...memberProfile(u), lastSeen:t, createdAt:t});
+    b.set(fdb.collection('joinCodes').doc(code), {workspaceId:ws, name});
+    b.set(col(ws, 'stores').doc(), {name:storeName || 'Main store', prefix:prefix || 'MS', seq:0, createdAt:t});
+    [['Cash','cash'], ['E-wallet','digital'], ['Card','digital'], ['Pay later','credit']]
+      .forEach(([n, kind], i) => b.set(col(ws, 'methods').doc(), {name:n, kind, active:true, createdAt:t + i}));
+    await b.commit();
+    return ws;
+  },
+  /* asks to join with an invite code; the owner approves under Users */
+  async joinShop(code){
+    const me = uid(), c = await fdb.collection('joinCodes').doc(code.toUpperCase().trim()).get();
+    if (!c.exists) throw new Error('No shop uses that invite code. Check it with the owner.');
+    const {workspaceId, name} = c.data(), ref = col(workspaceId, 'members').doc(me);
+    if (!(await ref.get()).exists)
+      await ref.set({uid:me, role:'staff', status:'pending', code:c.id, ...memberProfile(fbAuth.currentUser), lastSeen:null, createdAt:Date.now()});
+    return {workspaceId, name};
+  },
+  touch: ws => { try { return col(ws, 'members').doc(uid()).update({lastSeen:Date.now()}).catch(() => {}); } catch(e) { return Promise.resolve(); } },
+  async newJoinCode(ws){
+    const code = makeCode(), old = (await W(ws).get()).get('joinCode'), b = fdb.batch();
+    b.set(fdb.collection('joinCodes').doc(code), {workspaceId:ws, name:db.workspace.name});
+    if (old) b.delete(fdb.collection('joinCodes').doc(old));
+    b.update(W(ws), {joinCode:code});
+    await b.commit();
+    return code;
+  },
+  async saveSettings(ws, settings){
+    const code = (await W(ws).get()).get('joinCode'), b = fdb.batch();
+    b.update(W(ws), {settings, name:settings.business});
+    if (code) b.update(fdb.collection('joinCodes').doc(code), {name:settings.business});   // the name people see when they join
+    await b.commit();
+  },
+
+  /* Opens a shop and keeps it in sync. Resolves with the shop's data once everything has loaded;
+     after that, onChange(shop) runs whenever anything changes on any device,
+     and onChange(null) if this user loses access. Sales: the last `days` days, plus older unpaid pay-later sales. */
+  watchShop(ws, onChange, days = SALES_DAYS){
+    api.unsubscribe();
+    const since = new Date(); since.setHours(0,0,0,0); since.setDate(since.getDate() - days);
+    const loadedFrom = dayKey(since);
+    const sources = {
+      workspace: W(ws), stores: col(ws, 'stores'), methods: col(ws, 'methods'), products: col(ws, 'products'),
+      closings: col(ws, 'closings'), members: col(ws, 'members'),
+      recent: col(ws, 'sales').where('ts', '>=', +since),
+      unpaid: col(ws, 'sales').where('unpaid', '==', true),
+    };
+    const parts = {}, need = Object.keys(sources).length;
+    return new Promise((resolve, reject) => {
+      let ready = false;
+      for (const [k, ref] of Object.entries(sources)) unsubs.push(ref.onSnapshot(snap => {
+        parts[k] = snap;
+        if (Object.keys(parts).length < need) return;
+        latest = () => assembleShop(ws, parts, loadedFrom);
+        if (!ready) { ready = true; resolve(latest()); } else onChange(latest());
+      }, err => {
+        if (!ready) { api.unsubscribe(); reject(err); }
+        else if (err.code==='permission-denied') { api.unsubscribe(); onChange(null); }
+        else console.warn('Live update stopped', err);
+      }));
+    });
+  },
+  /* the open shop as the listeners last saw it (includes this device's own unsaved writes) */
+  currentShop: () => latest ? latest() : null,
+  unsubscribe(){ unsubs.forEach(f => f()); unsubs = []; latest = null; },
+
   /* one older day for History */
   async salesForDay(ws, key){
     const a = new Date(key + 'T00:00'), b = new Date(a); b.setDate(b.getDate() + 1);
-    return (await qAll(() => sb.from('sales').select('*').eq('workspace_id', ws).gte('ts', a.toISOString()).lt('ts', b.toISOString()).order('ts'))).map(toSale);
+    const snap = await col(ws, 'sales').where('ts', '>=', +a).where('ts', '<', +b).get();
+    return docsOf(snap).map(toSale).sort((x,y) => x.ts-y.ts);
   },
   /* every sale ever, for backups */
-  allSales: ws => qAll(() => sb.from('sales').select('*').eq('workspace_id', ws).order('ts').order('id')).then(r => r.map(toSale)),
+  allSales: async ws => docsOf(await col(ws, 'sales').get()).map(toSale).sort((a,b) => a.ts-b.ts),
 
   /* ---------- businesses (stores) ---------- */
-  addStore: (ws, name, prefix) => q(sb.from('stores').insert({workspace_id:ws, name, prefix}).select().single()).then(toStore),
-  updateStore: (id, patch) => q(sb.from('stores').update(patch).eq('id', id)),
-  deleteStore: id => q(sb.from('stores').delete().eq('id', id)),
+  async addStore(ws, name, prefix){
+    if (!(await col(ws, 'stores').where('prefix', '==', prefix).limit(1).get()).empty) throw new Error('Another business already uses that receipt prefix.');
+    const ref = col(ws, 'stores').doc(), row = {name, prefix, seq:0, createdAt:Date.now()};
+    await ref.set(row);
+    return toStore({id:ref.id, ...row});
+  },
+  async updateStore(id, patch){
+    if (patch.prefix) {
+      const same = await col(curWs(), 'stores').where('prefix', '==', patch.prefix).get();
+      if (same.docs.some(d => d.id!==id)) throw new Error('Another business already uses that receipt prefix.');
+    }
+    await col(curWs(), 'stores').doc(id).update(patch);
+  },
+  /* takes the business's products and closings with it; refused if it has sales */
+  async deleteStore(id){
+    const ws = curWs();
+    if (!(await col(ws, 'sales').where('storeId', '==', id).limit(1).get()).empty) throw new Error('This business has recorded sales, so it can’t be deleted. Rename it instead.');
+    const [prods, closes] = await Promise.all([col(ws, 'products').where('storeId', '==', id).get(), col(ws, 'closings').where('storeId', '==', id).get()]);
+    await inBatches([...prods.docs, ...closes.docs].map(d => d.ref), (b, ref) => b.delete(ref));
+    await col(ws, 'stores').doc(id).delete();
+  },
 
   /* ---------- payment methods ---------- */
-  addMethod: (ws, m) => q(sb.from('payment_methods').insert({workspace_id:ws, name:m.name, kind:m.kind, active:m.active}).select().single()).then(toMethod),
-  updateMethod: (id, m) => q(sb.from('payment_methods').update({name:m.name, kind:m.kind, active:m.active}).eq('id', id)),
-  deleteMethod: id => q(sb.from('payment_methods').delete().eq('id', id)),
+  async addMethod(ws, m){
+    const ref = col(ws, 'methods').doc(), row = {name:m.name, kind:m.kind, active:m.active!==false, createdAt:Date.now()};
+    await ref.set(row);
+    return toMethod({id:ref.id, ...row});
+  },
+  updateMethod: (id, m) => col(curWs(), 'methods').doc(id).update({name:m.name, kind:m.kind, active:m.active}),
+  async deleteMethod(id){
+    const ws = curWs();
+    if (!(await col(ws, 'sales').where('methodId', '==', id).limit(1).get()).empty) throw new Error('This method is used in past sales. Turn it off instead so old receipts still show it.');
+    await col(ws, 'methods').doc(id).delete();
+  },
 
   /* ---------- products ---------- */
   /* list items may carry id/created_at (used by Undo to put a deleted product back exactly) */
-  addProducts: (ws, storeId, list) => list.length ? q(sb.from('products').insert(list.map(p => ({
-      workspace_id:ws, store_id:storeId, ...productRow(p), ...(p.id ? {id:p.id} : {}), ...(p.created_at ? {created_at:p.created_at} : {})
-    }))).select()).then(rows => rows.map(toProduct)) : Promise.resolve([]),
-  updateProduct: (id, p) => q(sb.from('products').update(productRow(p)).eq('id', id).select().single()).then(toProduct),
-  deleteProduct: id => q(sb.from('products').delete().eq('id', id)),
+  async addProducts(ws, storeId, list){
+    const t = Date.now();
+    const rows = list.map((p, i) => ({id: p.id || col(ws, 'products').doc().id, storeId, ...productDoc(p), createdAt: p.created_at || t + i}));
+    await inBatches(rows, (b, {id, ...row}) => b.set(col(ws, 'products').doc(id), row));
+    return rows.map(toProduct);
+  },
+  async updateProduct(id, p){
+    const ref = col(curWs(), 'products').doc(id);
+    await ref.update(productDoc(p));
+    return toProduct({id, ...(await ref.get()).data()});
+  },
+  deleteProduct: id => col(curWs(), 'products').doc(id).delete(),
 
   /* ---------- sales ---------- */
-  /* The database gives the receipt number and takes items out of stock (record_sale in schema.sql) */
-  recordSale: ({store, items, method, tendered, customer, ref, ts, late, byName}) => q(sb.rpc('record_sale', {
-      p_store:store, p_items:items, p_method:method, p_tendered:tendered ?? null, p_customer:customer ?? null, p_ref:ref ?? null,
-      p_ts: ts ? new Date(ts).toISOString() : null, p_late:!!late, p_by_name:byName || ''})).then(toSale),
-  voidSale: (saleUuid, reason, byName) => q(sb.rpc('void_sale', {p_sale:saleUuid, p_reason:reason, p_by_name:byName})).then(toSale),
-  markPaid: saleUuid => q(sb.from('sales').update({paid_at:new Date().toISOString()}).eq('id', saleUuid).select().single()).then(toSale),
-  /* owner-only bulk insert (sample data, restoring a backup); skips receipt numbers that already exist */
-  async insertSales(rows){
-    for (let i = 0; i < rows.length; i += 500)
-      await q(sb.from('sales').upsert(rows.slice(i, i + 500), {onConflict:'workspace_id,receipt_no', ignoreDuplicates:true}));
+  /* One transaction gives the next receipt number and takes items out of stock,
+     so two phones selling at once can't get the same receipt number or oversell. */
+  recordSale({store, items, method, tendered, customer, ref, ts, late, byName}){
+    const ws = curWs(), me = uid();
+    if (!items || !items.length) return Promise.reject(new Error('The sale has no items.'));
+    return fdb.runTransaction(async tx => {
+      const stRef = col(ws, 'stores').doc(store), pids = [...new Set(items.map(it => it.pid).filter(Boolean))];
+      const [st, pm, ...prods] = await Promise.all([tx.get(stRef), tx.get(col(ws, 'methods').doc(method)), ...pids.map(id => tx.get(col(ws, 'products').doc(id)))]);
+      if (!st.exists) throw new Error('You are not allowed to record sales here.');
+      if (!pm.exists) throw new Error('Pick a payment method.');
+      const credit = pm.get('kind')==='credit';
+      if (credit && !(customer || '').trim()) throw new Error('Enter the customer’s name.');
+      let total = 0; const qty = {};
+      for (const it of items) {
+        const q = +it.qty;
+        if (!(q > 0)) throw new Error('Each item needs a quantity above 0.');
+        total += it.price * q;
+        if (it.pid) qty[it.pid] = (qty[it.pid] || 0) + q;
+      }
+      const stock = prods.filter(p => p.exists && p.get('storeId')===store && p.get('stock')!=null);
+      for (const p of stock) if (p.get('stock') < qty[p.id]) throw new Error(`Only ${p.get('stock')} ${p.get('unit')} of ${p.get('name')} left in stock.`);
+      const seq = (st.get('seq') || 0) + 1, receiptNo = st.get('prefix') + '-' + pad(seq, 4), saleRef = col(ws, 'sales').doc(saleId(receiptNo));
+      if ((await tx.get(saleRef)).exists) throw new Error('Receipt ' + receiptNo + ' already exists. Change this business’s receipt prefix in Settings.');
+      const now = Date.now(), sale = {
+        storeId:store, receiptNo, ts: ts || now, items, total:r2(total), methodId:method,
+        tendered: tendered ?? null, customer: (customer || '').trim() || null, ref: (ref || '').trim() || null,
+        late:!!late, recordedTs:now, paidTs:null, voided:null, unpaid:credit, byName:byName || '', byUser:me,
+      };
+      stock.forEach(p => tx.update(p.ref, {stock:r2(p.get('stock') - qty[p.id])}));
+      tx.update(stRef, {seq});
+      tx.set(saleRef, sale);
+      return toSale({id:saleRef.id, ...sale});
+    });
+  },
+  /* owner: void with a reason and put the items back in stock */
+  voidSale(saleUuid, reason, byName){
+    const ws = curWs();
+    return fdb.runTransaction(async tx => {
+      const ref = col(ws, 'sales').doc(saleUuid), s = await tx.get(ref);
+      if (!s.exists) throw new Error('That sale no longer exists.');
+      if (s.get('voided')) throw new Error('This sale is already voided.');
+      if (!(reason || '').trim()) throw new Error('Enter a reason for voiding.');
+      const items = s.get('items') || [], pids = [...new Set(items.map(it => it.pid).filter(Boolean))];
+      const prods = (await Promise.all(pids.map(id => tx.get(col(ws, 'products').doc(id))))).filter(p => p.exists && p.get('stock')!=null);
+      for (const p of prods) tx.update(p.ref, {stock:r2(p.get('stock') + items.filter(it => it.pid===p.id).reduce((a, it) => a + +it.qty, 0))});
+      const patch = {voided:{reason:reason.trim(), ts:Date.now(), by:byName || ''}, unpaid:false};
+      tx.update(ref, patch);
+      return toSale({id:ref.id, ...s.data(), ...patch});
+    });
+  },
+  async markPaid(saleUuid){
+    const ref = col(curWs(), 'sales').doc(saleUuid), patch = {paidTs:Date.now(), unpaid:false};
+    await ref.update(patch);
+    return toSale({id:ref.id, ...(await ref.get()).data(), ...patch});
+  },
+  /* owner-only bulk insert (sample data, restoring a backup); skips receipt numbers that already exist.
+     rows use the sales document fields: {storeId, receiptNo, ts, items, total, methodId, …} */
+  async insertSales(ws, rows){
+    const me = uid(), fresh = [];
+    for (let i = 0; i < rows.length; i += 30) {
+      const chunk = rows.slice(i, i + 30), ids = chunk.map(r => saleId(r.receiptNo));
+      const have = new Set((await col(ws, 'sales').where(firebase.firestore.FieldPath.documentId(), 'in', ids).get()).docs.map(d => d.id));
+      fresh.push(...chunk.filter((r, j) => !have.has(ids[j])));
+    }
+    await inBatches(fresh, (b, r) => b.set(col(ws, 'sales').doc(saleId(r.receiptNo)), {
+      tendered:null, customer:null, ref:null, late:false, paidTs:null, voided:null, byName:'', ...r,
+      recordedTs: r.recordedTs || r.ts, unpaid: kindOf(r.methodId)==='credit' && !r.paidTs && !r.voided, byUser:me}));
   },
   async clearSales(ws){
-    await q(sb.from('closings').delete().eq('workspace_id', ws));
-    await q(sb.from('sales').delete().eq('workspace_id', ws));
-    await q(sb.from('stores').update({seq:0}).eq('workspace_id', ws));
+    const [sales, closes, stores] = await Promise.all([col(ws, 'sales').get(), col(ws, 'closings').get(), col(ws, 'stores').get()]);
+    await inBatches([...closes.docs, ...sales.docs].map(d => d.ref), (b, ref) => b.delete(ref));
+    await inBatches(stores.docs.map(d => d.ref), (b, ref) => b.update(ref, {seq:0}));
   },
-  saveClosing: (ws, c) => q(sb.from('closings').upsert({workspace_id:ws, store_id:c.store, day:c.date, expected:c.expected, counted:c.counted, diff:c.diff, by_name:c.by || ''},
-    {onConflict:'store_id,day'}).select().single()).then(toClosing),
+  async saveClosing(ws, c){
+    const id = c.store + '_' + c.date, row = {storeId:c.store, day:c.date, expected:c.expected, counted:c.counted, diff:c.diff, byName:c.by || '', createdAt:Date.now()};
+    await col(ws, 'closings').doc(id).set(row);
+    return toClosing({id, ...row});
+  },
 
   /* ---------- people ---------- */
-  setMember: (ws, userId, role, status) => q(sb.rpc('set_member', {p_ws:ws, p_user:userId, p_role:role, p_status:status})),
-  removeMember: (ws, userId) => q(sb.rpc('remove_member', {p_ws:ws, p_user:userId})),
+  setMember(ws, userId, role, status){
+    if (userId===uid()) return Promise.reject(new Error('You can’t change your own role or status. Ask another owner.'));
+    return col(ws, 'members').doc(userId).update({role, status});
+  },
+  removeMember(ws, userId){
+    if (userId===uid()) return Promise.reject(new Error('You can’t remove yourself.'));
+    return col(ws, 'members').doc(userId).delete();
+  },
+  /* renames the sign-in account, the profile, and every shop membership */
   async updateMyName(userId, name){
-    await q(sb.from('profiles').update({full_name:name}).eq('id', userId));
-    await q(sb.auth.updateUser({data:{full_name:name}}));
+    await fbAuth.currentUser.updateProfile({displayName:name});
+    await fdb.collection('users').doc(userId).set({name}, {merge:true});
+    const mine = await fdb.collectionGroup('members').where('uid', '==', userId).get();
+    await Promise.all(mine.docs.map(d => d.ref.update({name})));
   },
-
-  /* ---------- live updates from other devices ---------- */
-  subscribe(ws, onChange){
-    api.unsubscribe();
-    channel = sb.channel('shop-' + ws);
-    for (const t of ['workspaces','members','stores','payment_methods','products','sales','closings'])
-      channel.on('postgres_changes', {event:'*', schema:'public', table:t, filter:(t==='workspaces' ? 'id=eq.' : 'workspace_id=eq.') + ws}, onChange);
-    channel.subscribe();
-  },
-  unsubscribe(){ if (channel) { sb.removeChannel(channel); channel = null; } },
 };

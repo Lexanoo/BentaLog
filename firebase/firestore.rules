@@ -1,0 +1,103 @@
+rules_version = '2';
+
+// BentaLog security rules for Cloud Firestore.
+// Publish them in Firebase console -> Firestore Database -> Rules (paste and Publish),
+// or with the Firebase CLI: firebase deploy --only firestore
+//
+// Members see their shop's data; only owners change setup.
+// Staff can record sales: add a sale, raise the business's receipt number by one, and lower stock.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function wsPath(ws) { return /databases/$(database)/documents/workspaces/$(ws); }
+    function memberPath(ws) { return /databases/$(database)/documents/workspaces/$(ws)/members/$(request.auth.uid); }
+    function isMember(ws) { return signedIn() && get(memberPath(ws)).data.status == 'active'; }
+    function isOwner(ws) { return isMember(ws) && get(memberPath(ws)).data.role == 'owner'; }
+    // like isOwner, but sees writes in the same batch (creating a shop adds the owner and the setup together)
+    function ownerAfter(ws) {
+      return signedIn() && getAfter(memberPath(ws)).data.role == 'owner' && getAfter(memberPath(ws)).data.status == 'active';
+    }
+    function onlyChanges(keys) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys); }
+
+    // One profile per person, readable and writable only by that person
+    match /users/{uid} {
+      allow read, write: if signedIn() && request.auth.uid == uid;
+    }
+
+    // Invite codes: anyone signed in can look up a code they were given (but not list them)
+    match /joinCodes/{code} {
+      allow get: if signedIn();
+      allow create: if ownerAfter(request.resource.data.workspaceId);
+      allow update: if isOwner(resource.data.workspaceId) && request.resource.data.workspaceId == resource.data.workspaceId;
+      allow delete: if isOwner(resource.data.workspaceId);
+    }
+
+    // "Which shops am I in?" (collection group query on members where uid == me)
+    match /{path=**}/members/{memberId} {
+      allow read: if signedIn() && resource.data.uid == request.auth.uid;
+    }
+
+    match /workspaces/{ws} {
+      // pending and turned-off members can still see the shop's name
+      allow read: if signedIn() && exists(memberPath(ws));
+      allow create: if signedIn() && request.resource.data.createdBy == request.auth.uid;
+      allow update: if isOwner(ws) && onlyChanges(['name', 'settings', 'joinCode']);
+      allow delete: if false;
+
+      match /members/{uid} {
+        allow read: if signedIn() && (uid == request.auth.uid || isMember(ws));
+        allow create: if signedIn() && uid == request.auth.uid && request.resource.data.uid == uid && (
+          // the person creating a shop becomes its first owner
+          (request.resource.data.role == 'owner' && request.resource.data.status == 'active'
+            && !exists(wsPath(ws))
+            && getAfter(wsPath(ws)).data.createdBy == uid)
+          // everyone else asks to join with the shop's invite code and waits for approval
+          || (request.resource.data.role == 'staff' && request.resource.data.status == 'pending'
+            && get(/databases/$(database)/documents/joinCodes/$(request.resource.data.code)).data.workspaceId == ws));
+        allow update: if
+          (uid == request.auth.uid && onlyChanges(['lastSeen', 'name', 'email', 'avatar']))
+          || (uid != request.auth.uid && isOwner(ws) && onlyChanges(['role', 'status'])
+            && request.resource.data.role in ['owner', 'staff']
+            && request.resource.data.status in ['active', 'pending', 'disabled']);
+        allow delete: if uid != request.auth.uid && isOwner(ws);
+      }
+
+      match /stores/{id} {
+        allow read: if isMember(ws);
+        allow create: if ownerAfter(ws);
+        allow update: if isOwner(ws)
+          || (isMember(ws) && onlyChanges(['seq']) && request.resource.data.seq == resource.data.seq + 1);
+        allow delete: if isOwner(ws);
+      }
+
+      match /methods/{id} {
+        allow read: if isMember(ws);
+        allow create: if ownerAfter(ws);
+        allow update, delete: if isOwner(ws);
+      }
+
+      match /products/{id} {
+        allow read: if isMember(ws);
+        allow create: if ownerAfter(ws);
+        allow update: if isOwner(ws)
+          || (isMember(ws) && onlyChanges(['stock'])
+            && request.resource.data.stock < resource.data.stock && request.resource.data.stock >= 0);
+        allow delete: if isOwner(ws);
+      }
+
+      match /sales/{id} {
+        allow read: if isMember(ws);
+        allow create: if isMember(ws) && request.resource.data.byUser == request.auth.uid;
+        allow update, delete: if isOwner(ws);
+      }
+
+      match /closings/{id} {
+        allow read: if isMember(ws);
+        allow write: if isOwner(ws);
+      }
+      
+    }
+  }
+}

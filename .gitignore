@@ -11,3 +11,8 @@ node_modules/
 .DS_Store
 Thumbs.db
 .vscode/
+
+# Firebase CLI / emulator files
+.firebase/
+.firebaserc
+*-debug.log

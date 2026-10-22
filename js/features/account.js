@@ -15,7 +15,7 @@ function accountModal(){
     <p class="err" id="mErr" role="alert"></p>
     <div class="actions"><button class="btn primary" type="submit">Save</button></div>
     <div class="eyebrow" style="margin-top:6px">Shops</div>
-    ${shops.length > 1 ? `<label class="field">Open shop<select id="aShop">${shops.map(m=>`<option value="${m.workspace_id}" ${m.workspace_id===db.workspace.id?'selected':''}>${esc(m.workspaces ? m.workspaces.name : 'Shop')}</option>`).join('')}</select></label>` : ''}
+    ${shops.length > 1 ? `<label class="field">Open shop<select id="aShop">${shops.map(m=>`<option value="${m.workspaceId}" ${m.workspaceId===db.workspace.id?'selected':''}>${esc(m.name)}</option>`).join('')}</select></label>` : ''}
     <div class="actions"><button type="button" class="btn" data-act="otherShop">Create or join another shop</button><button type="button" class="btn" data-act="logout">Sign out</button></div>
   </form>`;
 }

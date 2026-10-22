@@ -1,48 +1,46 @@
 # BentaLog
 
-Sales recording and monitoring for small shops. Owners and staff sign in with email or Google; all data lives in Supabase and syncs live between devices.
+Sales recording and monitoring for small shops. Owners and staff sign in with email or Google (Firebase Authentication); all data lives in Cloud Firestore and syncs live between devices.
 
-## 1. Set up Supabase (once)
+## 1. Set up Firebase (once)
 
-1. Create a free project at [supabase.com](https://supabase.com).
-2. Open **SQL Editor → New query**, paste all of [supabase/schema.sql](supabase/schema.sql), and click **Run**.
-   It creates the tables, the security rules (row-level security) and the server functions. Running it again is safe.
-3. Open **Project Settings → API** and copy:
-   - **Project URL** → `supabaseUrl` in [js/config.js](js/config.js)
-   - **anon public** key → `supabaseAnonKey` in [js/config.js](js/config.js)
+1. Create a free project at [console.firebase.google.com](https://console.firebase.google.com). Google Analytics is optional.
+2. **Build → Authentication → Get started → Sign-in method**:
+   - Turn on **Email/Password**.
+   - Turn on **Google**, pick a support email, and save. Firebase creates the Google sign-in client for you, so there's nothing to set up in Google Cloud.
+3. **Authentication → Settings → Authorized domains**: `localhost` is there already. Add your real address later (e.g. `yourshop.netlify.app`).
+4. **Build → Firestore Database → Create database**. Pick a location near your users and start in **production mode**.
+5. **Firestore → Rules**: replace everything with [firebase/firestore.rules](firebase/firestore.rules) and click **Publish**.
+6. **Firestore → Indexes → Single field → Add exemption**: collection ID `members`, field path `uid`, tick **Collection group** (ascending), save.
+   The app uses it to find which shops a person belongs to. Until it's built (a minute or two) the app shows "The database is missing an index".
 
-   The anon key is meant to be public. Never put the `service_role` key in the app.
-4. Open **Authentication → URL Configuration**:
-   - **Site URL**: where the app runs, e.g. `http://localhost:5500` while testing.
-   - **Redirect URLs**: add `http://localhost:5500/**`, plus your real address later (e.g. `https://yourshop.netlify.app/**`).
-5. Optional: **Authentication → Providers → Email**. "Confirm email" is on by default, so new users must click a link before they can sign in. Turn it off while testing if you prefer.
+   Steps 5 and 6 can be done in one go with the [Firebase CLI](https://firebase.google.com/docs/cli): `firebase login`, `firebase use --add`, then `firebase deploy --only firestore`.
+7. **Project settings (gear icon) → General → Your apps → Web (`</>`)**: register an app (no hosting needed), then copy the `firebaseConfig` values.
+8. Copy [js/config.example.js](js/config.example.js) to `js/config.js` (if it isn't there yet) and paste those values into `firebase: {…}`.
 
-## 2. Turn on "Continue with Google"
+   These values only identify your project and are fine to load in the browser. The security rules protect the data. `js/config.js` is git-ignored anyway.
 
-1. In [Google Cloud Console](https://console.cloud.google.com/), create or pick a project.
-2. **APIs & Services → OAuth consent screen**: choose *External*, fill in the app name and your email, and save.
-3. **APIs & Services → Credentials → Create credentials → OAuth client ID**:
-   - Application type: **Web application**
-   - **Authorized JavaScript origins**: `http://localhost:5500` (and your real address later)
-   - **Authorized redirect URIs**: `https://YOUR-PROJECT-REF.supabase.co/auth/v1/callback`
+## 2. Run it
 
-     You'll find this exact URL in Supabase under Authentication → Providers → Google.
-4. Copy the **Client ID** and **Client secret** into Supabase under **Authentication → Providers → Google**, turn it on, and save.
-
-## 3. Run it
-
-The app must be opened through a web address, not by double-clicking `index.html`, because Google sign-in and email links need one.
+The app must be opened through a web address, not by double-clicking `index.html`, because sign-in needs one.
 
 - **VS Code**: install the *Live Server* extension, right-click `index.html`, and choose **Open with Live Server**. It runs at `http://localhost:5500`.
 - **Or** in a terminal in this folder: `npm start`, then open `http://localhost:5500`.
 
-To put it online, upload the folder to any static host (Netlify, Vercel, GitHub Pages, Cloudflare Pages), then add that address to the Supabase redirect URLs and the Google origins.
+To put it online, upload the folder to any static host (Firebase Hosting, Netlify, Vercel, GitHub Pages, Cloudflare Pages), then add that domain under **Authentication → Settings → Authorized domains**.
 
 ## How people get in
 
 - **Owner**: create an account, then **Set up a new shop**. You become its owner, with one business tab and four payment methods (Cash, E-wallet, Card, Pay later).
 - **Staff**: create an account (or use Google), then **Join a shop** with the owner's 6-character invite code. Opening the owner's invite link fills the code in. The owner approves them under **Users**.
-- Owners can change roles, deactivate or remove people, and make a new invite code. Staff can sell and view reports; only owners can void sales, save closings, or change products, businesses, settings and users. The database enforces these rules, not just the screens.
+- Owners can change roles, deactivate or remove people, and make a new invite code. Staff can sell and view reports; only owners can void sales, save closings, or change products, businesses, settings and users. The Firestore security rules enforce this, not just the screens.
+
+## Managing users
+
+- **In the app** (owners): **Users** shows join requests, roles and access for your shop.
+- **In Firebase**: **Authentication → Users** lists every account and lets you disable or delete one, or send a password reset.
+  **Firestore → Data** shows each person's profile under `users/{uid}` and their shop access under `workspaces/{shop}/members/{uid}`.
+- Forgot password: the app sends Firebase's reset email; the link opens a Firebase page where the new password is set.
 
 ## Moving data from the old version
 
@@ -57,15 +55,15 @@ Businesses, payment methods, products, sales and closings are added to your shop
 ## Project layout
 
 ```
-index.html              page shell; loads the scripts below in order
+index.html              page shell; loads Firebase and the scripts below in order
 css/styles.css          all styles
-js/config.js            your Supabase URL and anon key
+js/config.js            your Firebase web app config (git-ignored; copy from config.example.js)
 js/core/
   constants.js          fixed lists: payment types, units, number formats, roles
   utils.js              money/date/number formatting, toast, error messages, attempt()
   state.js              db (loaded shop data), me (signed-in user), state (screen state), selectors
 js/data/
-  api.js                every Supabase call (auth, tables, server functions, live updates)
+  api.js                every Firebase call (sign-in, Firestore reads/writes, transactions, live updates)
   sample.js             sample sales, backup download and restore
 js/features/            one file per screen: its view and its actions
   auth.js  onboarding.js  sell.js  dashboard.js  history.js  close.js
@@ -73,9 +71,26 @@ js/features/            one file per screen: its view and its actions
 js/app/
   render.js             draws the current screen
   events.js             ACTIONS table: data-act="name" on a button -> the function that runs
-  main.js               startup, sign-in/out flow, loading a shop, live reload
-supabase/schema.sql     database: tables, security rules, server functions
+  main.js               startup, sign-in/out flow, opening a shop, live updates
+firebase/
+  firestore.rules       who can read and write what
+  firestore.indexes.json  the members.uid collection-group index
+firebase.json           lets the Firebase CLI deploy the two files above
 legacy/BentaLog.html    the old browser-only version (for exporting old data)
+```
+
+## Data layout (Firestore)
+
+```
+users/{uid}                     name, email, avatar, provider, lastLogin
+joinCodes/{code}                workspaceId, name
+workspaces/{shop}               name, settings, joinCode, createdBy
+  members/{uid}                 uid, role, status, name, email, avatar, lastSeen
+  stores/{id}                   name, prefix, seq (last receipt number)
+  methods/{id}                  name, kind, active
+  products/{id}                 storeId, name, category, sku, price, unit, step, stock, active
+  sales/{receiptNo}             storeId, ts, items, total, methodId, …, unpaid
+  closings/{storeId_day}        storeId, day, expected, counted, diff
 ```
 
 ## Debugging tips
@@ -83,6 +98,6 @@ legacy/BentaLog.html    the old browser-only version (for exporting old data)
 - **What does this button do?** Find its `data-act` value in [js/app/events.js](js/app/events.js). The `ACTIONS` table names the function it runs.
 - **What's loaded?** In the browser DevTools console, type `db`, `me` or `state`.
 - **A save failed?** The error shows on screen in plain words, and the full error is in the console (`console.error`).
-- **Database side**: Supabase → **Logs** (API and Postgres) shows rejected requests. "row-level security" errors mean the user isn't an active member or owner of that shop.
-- **Receipt numbers and stock** are handled by `record_sale` and `void_sale` in [supabase/schema.sql](supabase/schema.sql), so two phones can't use the same receipt number or sell stock that isn't there.
+- **"You don't have permission"** means the rules refused the write: the user isn't an active member or owner of that shop, or the rules weren't published. Try the request in **Firestore → Rules → Rules Playground**.
+- **Receipt numbers and stock** are handled in one Firestore transaction (`recordSale` and `voidSale` in [js/data/api.js](js/data/api.js)), so two phones can't use the same receipt number or sell stock that isn't there. Recording a sale needs an internet connection.
 - **Sales loaded at start**: the last 180 days (`salesDays` in [js/config.js](js/config.js)) plus all unpaid pay-later sales. Older days load when you pick them in Transaction history.

@@ -13,11 +13,13 @@
   <div id="app"></div>
   <div id="toast" class="toast" role="status" hidden></div>
 
-  <!-- Supabase client (exposes window.supabase) -->
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+  <!-- Firebase (exposes window.firebase): app, sign-in, database -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 
   <!-- App scripts. Plain scripts sharing one global scope, loaded in this order:
-       config -> core helpers -> data (Supabase) -> features (screens + their actions) -> app (rendering, events, startup) -->
+       config -> core helpers -> data (Firebase) -> features (screens + their actions) -> app (rendering, events, startup) -->
   <script src="js/config.js"></script>
   <script src="js/core/constants.js"></script>
   <script src="js/core/utils.js"></script>

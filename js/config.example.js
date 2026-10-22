@@ -1,10 +1,16 @@
-/* Supabase connection. Copy this file to js/config.js, then fill in both values from your Supabase project:
-   Project Settings -> API -> "Project URL" and the "anon public" (publishable) key.
-   The anon key is meant to be public; row-level security in supabase/schema.sql protects the data.
-   Never put the service_role / sb_secret_ key here. js/config.js is git-ignored. */
+/* Firebase connection. Copy this file to js/config.js, then paste your web app's config:
+   Firebase console -> Project settings -> General -> Your apps -> Web app -> "firebaseConfig".
+   These values identify your project and are safe to load in the browser; firebase/firestore.rules protects the data.
+   js/config.js is git-ignored so your project details stay out of GitHub. */
 window.BENTALOG_CONFIG = {
-  supabaseUrl: '',      // e.g. 'https://abcdefghijklm.supabase.co'
-  supabaseAnonKey: '',  // e.g. 'sb_publishable_...' or 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9....'
+  firebase: {
+    apiKey: '',
+    authDomain: '',          // e.g. 'your-project.firebaseapp.com'
+    projectId: '',
+    storageBucket: '',
+    messagingSenderId: '',
+    appId: '',
+  },
 
   // How many days of sales to load when the app opens. Older days load when you pick them in History.
   salesDays: 180,

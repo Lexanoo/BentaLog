@@ -1,0 +1,13 @@
+# Local Supabase config (holds your keys) - copy js/config.example.js to js/config.js
+js/config.js
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Dependencies / OS / editor
+node_modules/
+.DS_Store
+Thumbs.db
+.vscode/

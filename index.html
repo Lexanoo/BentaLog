@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>BentaLog</title>
+  <meta name="description" content="Sales recording and monitoring for small shops">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Figtree:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap">
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <div id="app"></div>
+  <div id="toast" class="toast" role="status" hidden></div>
+
+  <!-- Supabase client (exposes window.supabase) -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+
+  <!-- App scripts. Plain scripts sharing one global scope, loaded in this order:
+       config -> core helpers -> data (Supabase) -> features (screens + their actions) -> app (rendering, events, startup) -->
+  <script src="js/config.js"></script>
+  <script src="js/core/constants.js"></script>
+  <script src="js/core/utils.js"></script>
+  <script src="js/core/state.js"></script>
+  <script src="js/data/api.js"></script>
+  <script src="js/data/sample.js"></script>
+  <script src="js/features/auth.js"></script>
+  <script src="js/features/onboarding.js"></script>
+  <script src="js/features/sell.js"></script>
+  <script src="js/features/dashboard.js"></script>
+  <script src="js/features/history.js"></script>
+  <script src="js/features/close.js"></script>
+  <script src="js/features/products.js"></script>
+  <script src="js/features/users.js"></script>
+  <script src="js/features/settings.js"></script>
+  <script src="js/features/account.js"></script>
+  <script src="js/app/render.js"></script>
+  <script src="js/app/events.js"></script>
+  <script src="js/app/main.js"></script>
+</body>
+</html>

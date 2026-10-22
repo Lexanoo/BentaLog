@@ -1,0 +1,9 @@
+{
+  "name": "bentalog",
+  "version": "3.0.0",
+  "private": true,
+  "description": "Sales recording and monitoring for small shops (Supabase backend)",
+  "scripts": {
+    "start": "npx --yes http-server@14.1.1 . -p 5500 -c-1"
+  }
+}
